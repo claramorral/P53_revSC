@@ -1,0 +1,592 @@
+---
+title: "p53 promotes revival stem cells in the regenerating intestine after severe radiation injury"
+Analysis: "Pseudobulk analysis DGE"
+output: html_document
+date: "2023-11-27"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Open Packages
+```{r}
+library(scater)
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(edgeR)
+library(dplyr)
+library(magrittr)
+library(Matrix)
+library(purrr)
+library(reshape2)
+library(S4Vectors)
+library(tibble)
+library(SingleCellExperiment)
+library(pheatmap)
+library(apeglm)
+library(png)
+library(MAST)
+library(RColorBrewer)
+library(biomaRt)
+library(fgsea)
+library(piano)
+library(gridExtra)
+library(KEGGREST)
+library(clusterProfiler)
+organism = "org.Mm.eg.db"
+library(organism, character.only = TRUE)
+library(enrichplot)
+library(ggnewscale)
+library(pathview)
+library(msigdbr)
+library(limma)
+library(glmGamPoi)
+library(dplyr)
+library(patchwork)
+library(readxl)
+library(clusterProfiler)
+library(gt)
+library(plyr)
+library(dplyr)
+
+```
+
+
+### Read in Seurat Objects and Ascribe Metadata
+```{r, setup, include=FALSE}
+
+# Create Seurat objects
+
+#P53 WT Samples
+WTi_C_D0.data <- Read10X(data.dir ="~/Desktop/Minn Lab/Computacional/p53_scRNAseq/CountMatrix_CellRanger/WT_NR_1_GEX/outs/filtered_feature_bc_matrix")
+WTi_C_D0 <- CreateSeuratObject(counts = WTi_C_D0.data)
+
+WTii_C_D0.data <- Read10X(data.dir ="~/Desktop/Minn Lab/Computacional/p53_scRNAseq/CountMatrix_CellRanger/WT_NR_2_GEX/outs/filtered_feature_bc_matrix")
+WTii_C_D0 <- CreateSeuratObject(counts =WTii_C_D0.data)
+
+WTi_C_D2.data <- Read10X(data.dir ="~/Desktop/Minn Lab/Computacional/p53_scRNAseq/CountMatrix_CellRanger/WT_IR_1_GEX/outs/filtered_feature_bc_matrix")
+WTi_C_D2 <- CreateSeuratObject(counts = WTi_C_D2.data)
+
+WTii_C_D2.data <- Read10X(data.dir ="~/Desktop/Minn Lab/Computacional/p53_scRNAseq/CountMatrix_CellRanger/WT_IR_2_GEX/outs/filtered_feature_bc_matrix")
+WTii_C_D2 <- CreateSeuratObject(counts = WTii_C_D2.data)
+
+#P53 KO Samples
+KOi_C_D0.data <- Read10X(data.dir ="~/Desktop/Minn Lab/Computacional/p53_scRNAseq/CountMatrix_CellRanger/FL_NR_1_GEX/outs/filtered_feature_bc_matrix")
+KOi_C_D0 <- CreateSeuratObject(counts = KOi_C_D0.data)
+
+KOii_C_D0.data <- Read10X(data.dir ="~/Desktop/Minn Lab/Computacional/p53_scRNAseq/CountMatrix_CellRanger/FL_NR_2_GEX/outs/filtered_feature_bc_matrix")
+KOii_C_D0 <- CreateSeuratObject(counts = KOii_C_D0.data)
+
+KOi_C_D2.data <- Read10X(data.dir ="~/Desktop/Minn Lab/Computacional/p53_scRNAseq/CountMatrix_CellRanger/FL_IR_1_GEX/outs/filtered_feature_bc_matrix")
+KOi_C_D2 <- CreateSeuratObject(counts = KOi_C_D2.data)
+
+KOii_C_D2.data <- Read10X(data.dir ="~/Desktop/Minn Lab/Computacional/p53_scRNAseq/CountMatrix_CellRanger/FL_IR_2_GEX/outs/filtered_feature_bc_matrix")
+KOii_C_D2 <- CreateSeuratObject(counts = KOii_C_D2.data)
+
+
+#Merge Seurat Objects
+WT_NR.merged <- merge(WTi_C_D0, y = WTii_C_D0, add.cell.ids = c("1", "2"))
+WT_IR.merged <- merge(WTi_C_D2, y = WTii_C_D2, add.cell.ids = c("1", "2"))
+FL_NR.merged <- merge(KOi_C_D0, y = KOii_C_D0, add.cell.ids = c("1", "2"))
+FL_IR.merged <- merge(KOi_C_D2, y = KOii_C_D2, add.cell.ids = c("1", "2"))
+
+merged<-merge(x=WT_NR.merged, y=c(WT_IR.merged, FL_NR.merged, FL_IR.merged), add.cell.ids=c("WT_NR","WT_IR","FL_NR","FL_IR" ))
+
+# Add number of genes per UMI for each cell to metadata
+merged$log10GenesPerUMI <- log10(merged$nFeature_RNA)/log10(merged$nCount_RNA)
+
+# Compute percent mito ratio and add it into the Seurat Object
+merged$mitoRatio <- PercentageFeatureSet(merged, pattern = "^mt-")
+merged$mitoRatio <- merged@meta.data$mitoRatio/100
+
+# Create metadata dataframe
+metadata <- merged@meta.data
+
+# Add cell IDs to metadata
+metadata$cells <- rownames(metadata)
+
+# Rename columns
+metadata <- metadata %>%
+  dplyr::rename(seq_folder = orig.ident,
+                nUMI = nCount_RNA,
+                nGene = nFeature_RNA)
+
+# Create sample column
+metadata$sample <- NA
+metadata$sample[which(str_detect(metadata$cells, "^WT_NR"))] <- "WT_NR"
+metadata$sample[which(str_detect(metadata$cells, "^FL_NR"))] <- "FL_NR"
+metadata$sample[which(str_detect(metadata$cells, "^WT_IR"))] <- "WT_IR"
+metadata$sample[which(str_detect(metadata$cells, "^FL_IR"))] <- "FL_IR"
+
+# Create genotype column
+metadata$genotype <- NA
+metadata$genotype[which(str_detect(metadata$cells, "^WT_"))] <- "WT"
+metadata$genotype[which(str_detect(metadata$cells, "^FL_"))] <- "FL"
+
+# Create condition column
+metadata$condition <- NA
+metadata$condition[which(str_detect(metadata$cells, "^WT_NR"))] <- "NR"
+metadata$condition[which(str_detect(metadata$cells, "^WT_IR"))] <- "IR"
+metadata$condition[which(str_detect(metadata$cells, "^FL_NR"))] <- "NR"
+metadata$condition[which(str_detect(metadata$cells, "^FL_IR"))] <- "IR"
+
+# Create replicate column
+metadata$replicate <- NA
+metadata$replicate[which(str_detect(metadata$cells, "^WT_NR_1"))] <- "1"
+metadata$replicate[which(str_detect(metadata$cells, "^WT_IR_1"))] <- "1"
+metadata$replicate[which(str_detect(metadata$cells, "^FL_NR_1"))] <- "1"
+metadata$replicate[which(str_detect(metadata$cells, "^FL_IR_1"))] <- "1"
+metadata$replicate[which(str_detect(metadata$cells, "^WT_NR_2"))] <- "2"
+metadata$replicate[which(str_detect(metadata$cells, "^WT_IR_2"))] <- "2"
+metadata$replicate[which(str_detect(metadata$cells, "^FL_NR_2"))] <- "2"
+metadata$replicate[which(str_detect(metadata$cells, "^FL_IR_2"))] <- "2"
+
+#Create source column
+metadata$source<-"MinLab"
+
+# Add metadata back to Seurat object
+merged@meta.data <- metadata
+
+
+```
+
+
+# Perform QC 
+```{r}
+metadata<-merged@meta.data
+# Visualize the number of cell counts per sample
+metadata$sample<-factor(metadata$sample, levels=c("WT_NR", "WT_IR", "FL_NR", "FL_IR"))
+metadata %>%
+  ggplot(aes(x = sample, fill=sample)) +
+  geom_bar() +
+  scale_fill_manual(values=c("cadetblue", "chocolate", "darkseagreen4", "coral3"))+
+  theme_classic() +
+  theme(text = element_text(size = 20)) +
+  theme(axis.text.x = element_text(vjust = 1, hjust = 1, size = 12)) +
+  theme(axis.text.y=element_text(size=12))+
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size=20)) + 
+  ggtitle("NCells")
+
+# Visualize the number UMIs/transcripts per cell
+metadata %>% 
+  	ggplot(aes(color = sample, x = nUMI, fill =  sample)) +
+  	geom_density(alpha = 0.4) + 
+    scale_color_manual(values=c("cadetblue", "chocolate", "darkseagreen4", "coral3"))+
+    scale_fill_manual(values=c("cadetblue", "chocolate", "darkseagreen4", "coral3"))+
+  	scale_x_log10() + 
+  	theme_classic() +
+  	ylab("Cell density") +
+  	geom_vline(xintercept = 10)
+
+# Visualize the distribution of genes detected per cell via histogram
+metadata %>% 
+  	ggplot(aes(color = sample, x = nGene, fill =  sample)) + 
+  	geom_density(alpha = 0.4) + 
+    scale_color_manual(values=c("cadetblue", "chocolate", "darkseagreen4", "coral3"))+
+    scale_fill_manual(values=c("cadetblue", "chocolate", "darkseagreen4", "coral3"))+
+  	theme_classic() +
+  	scale_x_log10() + 
+  	ylab("Cell density")+
+  	geom_vline(xintercept = 600)
+
+# Visualize the distribution of genes detected per cell via boxplot
+metadata %>% 
+  	ggplot(aes(x = sample, y =nGene, fill = sample)) + 
+  	geom_boxplot() + 
+    scale_fill_manual(values=c("cadetblue", "chocolate", "darkseagreen4", "coral3"))+
+  	theme_classic() +
+    theme(text = element_text(size = 20))+
+  	theme(axis.text.x = element_text(angle = 360, vjust = 1, hjust=1)) +
+  	theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  	ggtitle("NGenes")
+
+# Visualize the distribution of UMI detected per cell via boxplot
+metadata %>% 
+  	ggplot(aes(x = sample, y =nUMI, fill = sample)) + 
+  	geom_boxplot() + 
+    scale_fill_manual(values=c("cadetblue", "chocolate", "darkseagreen4", "coral3"))+
+  	theme_classic() +
+    theme(text = element_text(size = 20))+
+  	theme(axis.text.x = element_text(angle = 360, vjust = 1, hjust=1)) +
+  	theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  	ggtitle("NUMI")
+
+
+# Visualize the correlation between genes detected and number of UMIs and determine whether strong presence of cells with low numbers of genes/UMIs
+
+mitoratio_plot<-metadata %>% 
+  	ggplot(aes(x = nUMI, y = nGene, color = mitoRatio)) + 
+  	geom_point() + 
+	  scale_colour_gradient(low = "gray90", high = "black") +
+  	stat_smooth(method=lm) +
+  	scale_x_log10() + 
+  	scale_y_log10() + 
+  	theme_classic() +
+    theme(text = element_text(size = 20))+
+  	geom_vline(xintercept = 500) +
+  	geom_hline(yintercept = 250) +
+  	facet_wrap(~sample)
+
+# Visualize the distribution of mitochondrial gene expression detected per cell
+metadata %>% 
+  	ggplot(aes(color = sample, x = mitoRatio, fill = sample)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	theme_classic() +
+  	geom_vline(xintercept = 0.25)
+
+# Visualize QC metrics as a violin plot
+VlnPlot(merged, features = "mitoRatio", split.by = "sample", cols=c("cadetblue", "chocolate", "darkseagreen4", "coral3"))
+
+# Visualize the overall complexity of the gene expression by visualizing the genes detected per UMI
+metadata %>%
+  	ggplot(aes(x = log10GenesPerUMI, color = sample, fill = sample)) +
+  	geom_density(alpha = 0.2) +
+  	theme_classic() +
+  	geom_vline(xintercept = 0.8)
+
+```
+
+#####Filter low quality cells
+```{r}
+# Filter out low quality reads using selected thresholds - these will change with experiment
+filtered <- subset(x = merged,subset = (nUMI >= 500) & (nGene >= 200) & (log10GenesPerUMI > 0.70) & (mitoRatio < 0.25))
+
+# Output a logical vector for every gene on whether the more than zero counts per cell
+# Extract counts
+counts <- GetAssayData(object = filtered, slot = "counts")
+
+# Output a logical vector for every gene on whether the more than zero counts per cell
+nonzero <- counts > 0
+
+# Sums all TRUE values and returns TRUE if more than 3 TRUE values per gene
+keep_genes <- Matrix::rowSums(nonzero) >= 3
+
+# Only keeping those genes expressed in more than 3 cells
+filtered_counts <- counts[keep_genes, ]
+
+# Reassign to filtered Seurat object
+filtered_nonzero <- CreateSeuratObject(filtered_counts, meta.data = filtered@meta.data)
+
+#Remove mito genes
+genes <- GetAssayData(filtered_nonzero, assay = "RNA")
+genes_names<-rownames(genes)
+nomitogenes<-genes_names[-(which(str_detect(genes_names, "^mt-")))]
+
+filtered_nonzero_nomitogenes <- genes[nomitogenes, ]
+filtered_nonzero_nomitogenes <- CreateSeuratObject(filtered_nonzero_nomitogenes, meta.data = filtered_nonzero@meta.data)
+
+```
+
+####CellCycle
+```{r}
+
+# Download cell cycle genes for organism at https://github.com/hbc/tinyatlas/tree/master/cell_cycle. Read it in with:
+cc_file <- getURL("https://raw.githubusercontent.com/hbc/tinyatlas/master/cell_cycle/Mus_musculus.csv") 
+cell_cycle_genes <- read.csv(text = cc_file)
+
+# Connect to AnnotationHub
+ah <- AnnotationHub()
+
+# Access the Ensembl database for organism
+ahDb <- query(ah, pattern = c("Mus musculus", "EnsDb"), ignore.case = TRUE)
+
+# Acquire the latest annotation files
+id <- ahDb %>%
+        mcols() %>%
+        rownames() %>%
+        tail(n = 1)
+
+# Download the appropriate Ensembldb database
+edb <- ah[[id]]
+
+# Extract gene-level information from database
+annotations <- genes(edb, 
+                     return.type = "data.frame")
+
+# Select annotations of interest
+annotations <- annotations %>%
+        dplyr::select(gene_id, gene_name, seq_name, gene_biotype, description)
+
+# Get gene names for Ensembl IDs for each gene
+cell_cycle_markers <- dplyr::left_join(cell_cycle_genes, annotations, by = c("geneID" = "gene_id"))
+
+# Acquire the S phase genes
+s_genes <- cell_cycle_markers %>%
+        dplyr::filter(phase == "S") %>%
+        pull("gene_name")
+        
+# Acquire the G2M phase genes        
+g2m_genes <- cell_cycle_markers %>%
+        dplyr::filter(phase == "G2/M") %>%
+        pull("gene_name")
+
+seurat_filtered_phase <- CellCycleScoring(filtered_nonzero_nomitogenes, s.features = s_genes, g2m.features = g2m_genes)
+
+```
+
+####Perform Doublet Removal
+```{r}
+
+# Find Doublets Using scDblFinder
+sce <- as.SingleCellExperiment(seurat_filtered_phase)
+sce <- scDblFinder(sce)
+mdata <- seurat_filtered_phase@meta.data
+mdata$cells <- rownames(mdata)
+mdata$multiplet_state <- colData(sce)$scDblFinder.class
+seurat_filtered_phase@meta.data <- mdata
+
+```
+
+
+#Normalize and Sclare RNA Slot data
+```{r, eval=T, fig.height=4, fig.width=6}
+
+# Normalize the counts, and scale data only high variable genes . 
+seurat_filtered_Norm <- NormalizeData(seurat_filtered_phase)
+all.genes <- rownames(seurat_filtered_Norm)
+seurat_filtered_Norm <- ScaleData(seurat_filtered_Norm, features=all.genes, vars.to.regress = c("mitoRatio", "S.Score", "G2M.Score"))
+seurat_filtered_Norm<- FindVariableFeatures(seurat_filtered_Norm, selection.method = "vst")
+
+```
+
+# Perform SCT and Integration
+```{r}
+options(future.globals.maxSize = 4000 * 1024^2)
+
+##Perform SCT Transform
+# Split seurat object by condition to perform cell cycle scoring and SCT on all samples
+split_seurat <- SplitObject(seurat_filtered_Norm, split.by = "sample")
+
+split_seurat <- split_seurat[c("WT_NR","WT_IR","FL_NR","FL_IR")]
+
+for (i in 1:length(split_seurat)) {
+    #split_seurat[[i]] <- NormalizeData(split_seurat[[i]], verbose = TRUE)
+    #split_seurat[[i]] <- CellCycleScoring(split_seurat[[i]], g2m.features=g2m_genes, s.features=s_genes)
+    split_seurat[[i]] <- SCTransform(split_seurat[[i]], vars.to.regress = c("mitoRatio", "S.Score", "G2M.Score"))
+}
+
+##Perform Integration
+# Select the most variable features to use for integration
+integ_features <- SelectIntegrationFeatures(object.list = split_seurat) 
+
+# Prepare the SCT list object for integration
+split_seurat <- PrepSCTIntegration(object.list = split_seurat, 
+                                   anchor.features = integ_features)
+
+# Find best buddies - can take a while to run
+integ_anchors <- FindIntegrationAnchors(object.list = split_seurat, 
+                                        normalization.method = "SCT",
+                                        anchor.features = integ_features)
+
+# Integrate across conditions
+seurat_integrated <- IntegrateData(anchorset = integ_anchors,
+                                   normalization.method = "SCT")
+
+```
+
+
+#####Find Clusters: compaere usinf the RNA or SCT Slot
+```{r, eval=T, fig.height=5, fig.width=7}
+
+#Run the PCA and UMAP for SCT
+SCT<-RunPCA(seurat_integrated)
+SCT<-RunUMAP(SCT,reduction="pca", dims=1:40)
+
+SCT<-FindNeighbors(SCT, dims = 1:40, verbose = FALSE)
+SCT<-FindClusters(SCT,resolution = c(0.2, 0.4, 0.5, 0.6, 0.8), verbose = FALSE)
+
+Idents(object = SCT) <- "integrated_snn_res.0.2"
+
+```
+
+### Identification of Epithelial and Immune cells 
+```{r, eval=T, fig.height=5, fig.width=7}
+
+# Select the RNA counts slot to be the default assay
+DefaultAssay(SCT) <- "SCT"
+
+# Dotplot of Epithelial and Immune markers
+
+FeaturePlot(SCT, features = c("Epcam", "Ptprc","Cd3g", "Col1a1"), order = TRUE, label=TRUE)
+
+
+# Rename clusters based in immune or epithelial origin
+SCT_e_i <- RenameIdents(SCT, `0` = "I", `1` = "E", `2` = "E", `3` = "E", `4` = "E", `5` = "E", `6` = "I", `7` = "E", `8` = "E", `9` = "I", `10` = "I", `11` = "E", `12` = "I", `13` = "I", `14` = "I", `15` = "E")
+
+# Obtain cluster names
+clusters_SCT_e_i <- levels(Idents(SCT_e_i))
+
+# Subset Epi clusters
+SCT_epi <- subset(SCT_e_i, idents = clusters_SCT_e_i[grepl("E", clusters_SCT_e_i, fixed = TRUE)])
+
+````
+
+####Load Seurat Object Epi Cells P53 WT and P53 KO for pseudobulk analysis
+```{r}
+
+seurat_Epi<- readRDS("/Volumes/Clara/Science/Minn_Lab/Computacional/p53_scRNAseq/Seurats/New/Scale data ALL genes/p53_filtered_SCT_mergedALL_Epi_Stem_Diff.rds")
+
+seurat_Epi<-SCT_epi
+
+```
+
+####SUPPLEMENTARY FIGURE 4A
+```{r}
+
+#Normalize and Scale
+Idents(seurat_Epi)<-'sample'
+DefaultAssay(seurat_Epi)<-"RNA"
+seurat_Epi<- NormalizeData(seurat_Epi, verbose = FALSE)
+seurat_Epi<- ScaleData(seurat_Epi)
+
+#Get the average gene expression
+p53_avgexp<- AverageExpression(seurat_Epi, return.seurat = T)
+#Obtain count data
+p53_avgexp<-p53_avgexp@assays[["RNA"]]@data
+#extract expression of specific genes
+genes <- c("Zmat3", "Traf4", "Tob1","Phlda3","Cdkn2a","Cdkn1a","Ccnd2","Bax","Bak1","Rhbdf2")
+p53_avgexp<-p53_avgexp[rownames(p53_avgexp) %in% genes,]
+p53_avgexp<- t(scale(t(p53_avgexp)))
+
+row_order<-c("Phlda3","Cdkn2a","Cdkn1a", "Ccnd2","Bax", "Zmat3","Bak1","Tob1", "Rhbdf2", "Traf4")
+p53_avgexp <- p53_avgexp[row_order,]
+
+pheatmap(p53_avgexp,
+         cluster_rows = FALSE,
+         cluster_cols = FALSE,
+         cellwidth = 60, 
+         cellheight = 20,
+         border_color = FALSE,
+         fontsize_row = 10,
+         fontsize_col = 12,
+         row_names_side = "left",
+         column_names_side = "top",
+         gaps_col=c(1,2,3),
+         angle_col = "0",
+         show_colnames = TRUE,
+         legend = TRUE,
+         annotation_legend=TRUE)
+
+```
+
+####FIGURE 5A
+```{r}
+#Scale data of each seurat object using all genes
+all.genes_Epi <- rownames(seurat_Epi)
+seurat_Epi_scaled<- ScaleData(seurat_Epi, features=all.genes_Epi)
+
+#Generate a DGElist 
+#Set RNA slot for DE
+DefaultAssay(seurat_Epi_scaled)<-"RNA"
+
+#Extract the counts form seurat object
+counts<-as.matrix(GetAssayData(seurat_Epi_scaled[["RNA"]], slot = "counts"))
+#Fins genes that have zero counts across cells
+zerocounts<-rowSums(counts)==0
+#Filter zero counts and run DGElist function
+DGElist<-DGEList(counts[!zerocounts,], group = seurat_Epi_scaled$sample)
+#Normalize
+DGElist_norm<-calcNormFactors(DGElist)
+#Setup design matrix
+groups <- factor(DGElist_norm$sample$group)
+groups <- factor(groups, levels=c("WT_NR", "WT_IR", "FL_NR",  "FL_IR"))
+design <- model.matrix(~0 + groups)
+colnames(design) <- levels(groups)
+y <- new("EList")
+y$E <- edgeR::cpm(DGElist_norm, log = TRUE, prior.count = 4)
+# Use VOOM function from Limma package to model the mean-variance relationship
+v.DEGList.filtered.norm <- voom(y, design, plot = TRUE)
+# fit a linear model to your data
+fit <- lmFit(y, design)
+
+# Contrast matrix ----
+contrast.matrix <- makeContrasts(WT_NRvsFL_NR = WT_NR-FL_NR,
+                                 WT_IRvsFL_IR = WT_IR-FL_IR,
+                                 WT_IRvsWT_NR = WT_IR-WT_NR,
+                                 FL_IRvsFL_NR = FL_IR-FL_NR,
+                                 levels=design)
+# extract the linear model fit -----
+fits <- contrasts.fit(fit, contrast.matrix)
+#get bayesian stats for your linear model fit
+ebFit <- eBayes(fits)
+# TopTable to view DEGs -----
+myTopHits_seurat_Epi<- topTable(ebFit, n = Inf, adjust.method = "BH")
+
+myTopHits_seurat_Epi.df <- myTopHits_seurat_Epi %>%
+  as_tibble(rownames = "geneID")
+
+#Generate Tables for TOP enriched genes
+
+myTopHits.df<-myTopHits_seurat_Epi.df
+
+#P53 WT IR vs NR
+
+WT_IRvsWT_NR<-myTopHits.df[,c(1,4)] #select only columns we want
+colnames(WT_IRvsWT_NR)<-c("gene","avg_log2FC")#rename columns
+foldChange<- WT_IRvsWT_NR$avg_log2FC#Transform foldchange in a numeric vector
+names(foldChange) <- WT_IRvsWT_NR$gene#name the vector
+foldChange_WTIR_WTNR <- sort(foldChange, decreasing = TRUE)
+
+#P53 KO IR vs NR
+
+FL_IRvsFL_NR<-myTopHits.df[,c(1,5)]
+colnames(FL_IRvsFL_NR)<-c("gene","avg_log2FC")
+foldChange<- FL_IRvsFL_NR$avg_log2FC
+names(foldChange) <- FL_IRvsFL_NR$gene
+foldChange_FLIR_FLNR <- sort(foldChange, decreasing = TRUE)
+
+#Define HALLMARKS function
+hm <- msigdbr(species = "Mus musculus", category = "H") %>%   
+  dplyr::select(gs_name, gene_symbol)
+
+#Define HALLMARKS function
+gseHMfunction<-function(fc){
+             GSEA(geneList = fc,
+             minGSSize = 3, 
+             nPerm=1000,
+             maxGSSize = 1000000,
+             TERM2GENE = hm,
+             pvalueCutoff = 0.5)
+}
+
+
+#Run Hallmarks function
+#P53 WT IR vs NR
+gseHM_WIvsWR<-gseHMfunction(foldChange_WTIR_WTNR)
+result<-gseHM_WIvsWR@result
+result$comparison<-"WT_IR vs WT_NR"
+gseHM_WIvsWR@result<-result
+
+#P53 KO IR vs NR
+gseHM_FIvsFR<-gseHMfunction(foldChange_FLIR_FLNR)
+result<-gseHM_FIvsFR@result
+result$comparison<-"FL_IR vs FL_NR"
+gseHM_FIvsFR@result<-result
+
+#Plot results
+#P53 WT IR vs NR Hallmarks
+plot_WIvsWR<-ggplot(gseHM_WIvsWR@result[which(gseHM_WIvsWR@result$pvalue<0.01),], mapping=aes(x=NES, y=reorder(Description,NES))) + 
+  geom_point(aes(color = pvalue, size = setSize))+
+  xlim(-2.5,2.5)+
+  theme(axis.text.y = element_text(size = 15),axis.text.x = element_text(size = 15),axis.title = element_text(size = 20))+
+  scale_color_continuous(low="red", high="blue")+
+  labs(x= "NES",y="Description")+
+  ggtitle("p53WT_IR vs p53WT_NR")
+
+plot_WIvsWR+geom_vline(xintercept = 0,linetype="dotted")
+
+#P53 KO IR vs NR Hallmarks
+plot_FIvsFR<-ggplot(gseHM_FIvsFR@result[which(gseHM_FIvsFR@result$pvalue<0.07),], mapping=aes(x=NES, y=reorder(Description,NES))) + 
+  geom_point(aes(color = pvalue, size = setSize))+
+  xlim(-2.5,2.5)+
+  theme(axis.text.y = element_text(size = 15),axis.text.x = element_text(size = 15),axis.title = element_text(size = 20))+
+  scale_color_continuous(low="red", high="blue")+
+  labs(x= "NES",y="Description")+
+  ggtitle("p53KO_IR vs p53KO_NR")
+
+plot_FIvsFR+geom_vline(xintercept = 0,linetype="dotted")
+
+
+```
